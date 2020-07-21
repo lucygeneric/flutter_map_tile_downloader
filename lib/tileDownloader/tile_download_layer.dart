@@ -142,7 +142,7 @@ class _TileDownloadLayerState extends State<TileDownloadLayer> {
     return file.writeAsBytes(req.bodyBytes);
   }
 
-  void genrateVirtualGrids(double zoom) async {
+  Future<void> genrateVirtualGrids(double zoom) async {
     _setView(widget.map.center, zoom);
 
     var pixelBounds = getBounds(zoom);
@@ -265,15 +265,9 @@ class _TileDownloadLayerState extends State<TileDownloadLayer> {
 
   downloadTiles() async {
 
-    Map<PermissionGroup, PermissionStatus> permissions =
-    await PermissionHandler().requestPermissions(
-        [PermissionGroup.storage]);
+    bool permissionStorage = await Permission.storage.isGranted;
 
-    PermissionStatus permissionStorage = await PermissionHandler()
-        .checkPermissionStatus(PermissionGroup.storage);
-
-
-    if(permissionStorage == PermissionStatus.granted) {
+    if(permissionStorage) {
 
       var dir = (await getApplicationDocumentsDirectory()).path;
 
