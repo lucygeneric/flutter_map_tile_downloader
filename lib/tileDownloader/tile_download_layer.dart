@@ -265,6 +265,8 @@ class _TileDownloadLayerState extends State<TileDownloadLayer> {
 
   downloadTiles() async {
 
+    await Permission.storage.request();
+
     bool permissionStorage = await Permission.storage.isGranted;
 
     if(permissionStorage) {
