@@ -23,7 +23,7 @@ dev_dependencies:
   dio: 3.0.9
   permission_handler: 5.0.1
   flutter_range_slider: 1.4.0
-  path_provider: 1.6.10
+  path_provider: 1.6.11
   shared_preferences: 0.5.7+3
   percent_indicator: ^2.1.1+1
 
