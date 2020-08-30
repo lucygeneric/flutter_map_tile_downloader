@@ -4,6 +4,7 @@ import 'dart:async';
 import 'package:flutter/services.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_map_tile_downloader/flutter_map_tile_downloader.dart';
+import 'package:path_provider/path_provider.dart';
 
 
 import 'package:latlong/latlong.dart';
@@ -17,136 +18,87 @@ class MyApp extends StatefulWidget {
 
 class _MyAppState extends State<MyApp> {
 
-  bool _tileSelecting = false;
-  bool _offline = false;
-
-  OfflineTile _off_line_tile = OfflineTile(
-      minZoom:0,
-      maxZoom:0,
-      urlTemplate:"",
-  );
-
   @override
   void initState()  {
     super.initState();
-    getOfflineTile();
-  }
-  void getOfflineTile() async {
-
-        OfflineTile off_line_tile =  await getOfflineTileData();
-        setState(() {
-          _off_line_tile = off_line_tile;
-        });
-
-  }
-  void startTileSelect(bool value) async {
-    setState(() {
-      _tileSelecting = value;
-    });
-
-  }
-  void onCompleted() async {
-
-    getOfflineTile();
-    setState(() {
-      _tileSelecting : false;
-    });
+    setup();
   }
 
-  void showOffline() async {
-      setState(() {
-        _offline = !_offline;
-      });
+  List<LayerOptions> layers = [];
+  OfflineTileConfig config;
+
+  bool showOffline = false;
+
+  void setup() async {
+    String dir = (await getApplicationDocumentsDirectory()).path;
+    config = OfflineTileConfig(minZoom: 6, maxZoom: 16, urlTemplate: "$dir/offline_map/{z}/{x}/{y}.png");
+    setState(() { });
   }
 
   @override
   Widget build(BuildContext context)  {
+    List<LatLng> points = [
+      LatLng(-36.863361,174.906494),
+      LatLng(-36.864600,174.760810),
+      LatLng(-36.884632,174.736068),
+      LatLng(-36.874265,174.742595),
+      LatLng(-36.877012,174.727531),
+      LatLng(-36.877424,174.913795)
+    ];
 
+    if (config == null) return Container();
 
-    List<LayerOptions> layers = [];
+    layers.clear();
 
-    if (_offline && _off_line_tile.urlTemplate != null) {
-      layers.add(
-          TileLayerOptions(
-            tileProvider: FileTileProvider(),
-            maxZoom: _off_line_tile.maxZoom,
-            urlTemplate: _off_line_tile.urlTemplate,
-          )
-      );
-    } else {
-      layers.add(
-      TileLayerOptions(
-        urlTemplate: 'http://{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}',
-        subdomains: ['mt0', 'mt1', 'mt2', 'mt3'],
-        tileProvider: CachedNetworkTileProvider(),
-      )
-      );
-    }
+    if (!showOffline)
+      layers.add(TileLayerOptions(
+          urlTemplate: "https://api.mapbox.com/styles/v1/ecoportal-developer/ck9apf67102vs1is7uptnulc4/tiles/256/{z}/{x}/{y}@2x?access_token=pk.eyJ1IjoiZWNvcG9ydGFsLWRldmVsb3BlciIsImEiOiJjazlhcGF1d2owOG9uM21xdXQ1cDZiZDY3In0.mDehRjqNwuGZzH5cO2Fa4g",
+          additionalOptions: {
+            'accessToken': 'pk.eyJ1IjoiZWNvcG9ydGFsLWRldmVsb3BlciIsImEiOiJjazlhcGF1d2owOG9uM21xdXQ1cDZiZDY3In0.mDehRjqNwuGZzH5cO2Fa4g',
+            'id': 'mapbox.streets',
+          },
+          keepBuffer: 0
+        ));
 
-    if(_tileSelecting){
-      layers.add(
-          TileDownloadLayerOptions(
-            onComplete: onCompleted,
-            urlTemplate: 'http://{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}',
-            subdomains: ['mt0', 'mt1', 'mt2', 'mt3'],
-            minZoom: 8,
-            maxZoom: 12,
-            downloadTxt: "Download",
-            selectZoomLevelTxt: "Please select zoom levels"
-          )
-      );
-    }
+    layers.add(TileDownloadLayerOptions(
+        onComplete: () => print("FOOOO"),
+        urlTemplate: "https://api.mapbox.com/styles/v1/ecoportal-developer/ck9apf67102vs1is7uptnulc4/tiles/256/{z}/{x}/{y}@2x?access_token=pk.eyJ1IjoiZWNvcG9ydGFsLWRldmVsb3BlciIsImEiOiJjazlhcGF1d2owOG9uM21xdXQ1cDZiZDY3In0.mDehRjqNwuGZzH5cO2Fa4g",
+        subdomains: ['z','x','y'],
+        minZoom: config.minZoom,
+        maxZoom: config.maxZoom,
+        points: points
+      ));
+
+    if (showOffline)
+      layers.add(TileLayerOptions(
+        tileProvider: FileTileProvider(),
+        maxZoom: config.maxZoom,
+        urlTemplate: config.urlTemplate,
+      ));
 
     return MaterialApp(
       home: Scaffold(
-        appBar: AppBar(title: Text('Tile downloader exmample')),
+        appBar: AppBar(title: Text('Tile downloader example')),
         body: Padding(
-          padding: EdgeInsets.all(8.0),
-          child: Stack(
-            children: [
-              FlutterMap(
-                options: MapOptions(
-                  center: LatLng(32.91081899999999, -92.734876),
-                  zoom: 8.0,
-                  minZoom: _offline && _off_line_tile.urlTemplate != null ? _off_line_tile.minZoom : 0,
-                  maxZoom: _offline && _off_line_tile.urlTemplate != null ? _off_line_tile.maxZoom :18,
-                  plugins: [
-                    TileDownloaderPlugin()
-                  ],
-                ),
-                layers: layers,
+          padding: EdgeInsets.zero,
+          child: Stack(children: [
+            FlutterMap(
+              options: MapOptions(
+                center: LatLng(-36.863361,174.906494),
+                zoom: 10.0,
+                minZoom: config.minZoom,
+                maxZoom: config.maxZoom,
+                plugins: [
+                  TileDownloaderPlugin()
+                ],
               ),
-              Positioned(
-                  bottom: 65,
-                  right: 10,
-                  child: RaisedButton(
-                      onPressed: () {
-                        startTileSelect(!_tileSelecting);
-                      },
-
-                      child: _tileSelecting
-                          ? Text("Stop tile download")
-                          : Text("Tile download")
-                  )),
-              Visibility(
-                child: Positioned(
-                    bottom: 120,
-                    right: 10,
-                    child: RaisedButton(
-                      onPressed: (_off_line_tile.urlTemplate != null)
-                          ? () {
-                        showOffline();
-                      }
-                          : null,
-
-                      child: _offline
-                          ? Text("Show online tile")
-                          : Text("Show offine tile" ),
-                    )),
-                visible: (_off_line_tile.urlTemplate != null),
-              )
-            ],
-          ),
+              layers: layers
+            ),
+            Positioned(child:
+              RaisedButton(child: Text("Toggle Offline"), onPressed: () => setState((){ showOffline = !showOffline; })),
+              bottom: 20.0, left: 20.0
+            )
+          ])
         ),
       ),
     );
