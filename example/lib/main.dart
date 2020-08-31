@@ -66,7 +66,8 @@ class _MyAppState extends State<MyApp> {
         subdomains: ['z','x','y'],
         minZoom: config.minZoom,
         maxZoom: config.maxZoom,
-        points: points
+        points: points,
+        debug: true
       ));
 
     if (showOffline)

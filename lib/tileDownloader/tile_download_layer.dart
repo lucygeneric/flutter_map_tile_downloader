@@ -16,6 +16,7 @@ import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'dart:async';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:tuple/tuple.dart';
 
 class TileDownloadLayer extends StatefulWidget {
   final TileDownloadLayerOptions options;
@@ -39,7 +40,8 @@ class _TileDownloadLayerState extends State<TileDownloadLayer> {
   int screenAreaToDownloadPx = 256;
 
   List<Widget> markers = [];
-  List<Widget> boundingBoxes  = [];
+  Map<String, Rect> boundingBoxMap  = {};
+  Widget boundingBox = Container();
   List<Widget> debugTools = [];
 
   StreamController<String> streamController;
@@ -53,6 +55,8 @@ class _TileDownloadLayerState extends State<TileDownloadLayer> {
       minZoom = widget.options.minZoom;
       maxZoom = widget.options.maxZoom;
     });
+
+    generateDebugTools();
 
     streamController.stream.listen((data) {
       if (mounted)
@@ -72,124 +76,31 @@ class _TileDownloadLayerState extends State<TileDownloadLayer> {
     super.dispose();
   }
 
-  Bounds _pxBoundsToTileRange(Bounds bounds) {
-    var tileSize = CustomPoint(256.0, 256.0);
-    return Bounds(
-      bounds.min.unscaleBy(tileSize).floor(),
-      bounds.max.unscaleBy(tileSize).ceil() - CustomPoint(1, 1),
-    );
-  }
+  /// TILE QUEUE BUILD /////////////////////////////////////////////////////////
+  /// //////////////////////////////////////////////////////////////////////////
 
-  void _setView(double zoom) {
-    var tileZoom = zoom.round().toDouble();
-    if (_tileZoom != tileZoom) {
-      _tileZoom = tileZoom;
-    }
+  var queue = <TileQueueItem>[];
 
-    var bounds = widget.map.getPixelWorldBounds(_tileZoom);
-    if (bounds != null) {
-      _globalTileRange = _pxBoundsToTileRange(bounds);
-    }
-  }
+  List<TileQueueItem> generateQueueForZoom(LatLng latLng, double zoom) {
 
-  bool _isValidTile(Coords coords) {
-    var crs = widget.map.options.crs;
-    if (!crs.infinite) {
-      var bounds = _globalTileRange;
-      if ((crs.wrapLng == null &&
-              (coords.x < bounds.min.x || coords.x > bounds.max.x)) ||
-          (crs.wrapLat == null &&
-              (coords.y < bounds.min.y || coords.y > bounds.max.y))) {
-        return false;
-      }
-    }
-    return true;
-  }
+    List<TileQueueItem> zoomQueue = [];
 
-  Future<File> moveFile(File sourceFile, String newPath) async {
-    try {
-      // prefer using rename as it is probably faster
-      return await sourceFile.rename(newPath);
-    } on FileSystemException catch (e){
-      // if rename fails, copy the source file and then delete it
-      final newFile = await sourceFile.copy(newPath);
-      await sourceFile.delete();
-      return newFile;
-    }
-  }
+    setView(zoom);
 
-  double getZoomScale(double toZoom, double fromZoom) {
-    var crs = const Epsg3857();
-    return crs.scale(toZoom) / crs.scale(fromZoom);
-  }
-
-  Point getBoxOffset(double scale){
-    double boxSizeOffset = ((screenAreaToDownloadPx * 0.5) * scale);
-    return Point(boxSizeOffset,boxSizeOffset);
-  }
-
-  Future<File> downloadFile(String url, String filename, String dir) async {
-    var req = await http.Client().get(Uri.parse(url));
-    var file = File('$dir/$filename');
-    return file.writeAsBytes(req.bodyBytes);
-  }
-
-  var queue = <Coords>[];
-
-  Bounds getBounds(LatLng point, double zoom) {
-    var scale = getZoomScale(zoom, widget.map.zoom);
-    double w = screenAreaToDownloadPx / scale;
-    double h = screenAreaToDownloadPx / scale;
-    Point center = getViewportPointFromLatLng(point);
-
-    CustomPoint topLeft     = CustomPoint(center.x - (w * 0.5), center.y - (h * 0.5));
-    CustomPoint bottomRight = CustomPoint(center.x + (w * 0.5), center.y + (h * 0.5));
-
-    var globalTopLeft = pointToGlobal(topLeft, point, zoom);
-    var globalBottomRight = pointToGlobal(bottomRight, point, zoom);
-
-    addBoundingBox(topLeft, bottomRight, zoom);
-    renderPoint(point, zoom);
-
-    return Bounds(globalTopLeft * scale, globalBottomRight * scale);
-  }
-
-  Point pointToGlobal(Point point, LatLng center, double zoom){
-    var renderObject = context.findRenderObject() as RenderBox;
-    var width = renderObject.size.width;
-    var height = renderObject.size.height;
-    var localPointCenterDistance =
-        CustomPoint((width / 2) - point.x, (height / 2) - point.y);
-    var mapCenter = widget.map.project(widget.map.center);
-
-    return mapCenter - localPointCenterDistance;
-  }
-
-  Point globalToPoint(Point point){
-    LatLng latLng = widget.map.unproject(point);
-    return getViewportPointFromLatLng(latLng);
-  }
-
-  List<Coords<num>> generateQueueForZoom(LatLng point, double zoom) {
-
-    List<Coords<num>> zoomQueue = [];
-
-    _setView(zoom);
-
-    var pixelBounds = getBounds(point, zoom);
-    var tileRange = _pxBoundsToTileRange(pixelBounds);
+    var pixelBounds = getBounds(latLng, zoom);
+    var tileRange = pxBoundsToTileRange(pixelBounds);
 
     for (var j = tileRange.min.y; j <= tileRange.max.y; j++) {
       for (var i = tileRange.min.x; i <= tileRange.max.x; i++) {
         var coords = Coords(i.toDouble(), j.toDouble());
         coords.z = _tileZoom;
 
-        if (!_isValidTile(coords)) {
+        if (!isValidTile(coords)) {
           continue;
         }
         // FIXME figure out an optimal way to do this. hash it or summat.
-        if (!zoomQueue.any((element) => element.x == coords.x && element.y == coords.y))
-        zoomQueue.add(coords);
+        if (!zoomQueue.any((TileQueueItem element) => element.coords == coords))
+        zoomQueue.add(TileQueueItem(coords: coords, latLng: latLng));
       }
     }
 
@@ -207,23 +118,26 @@ class _TileDownloadLayerState extends State<TileDownloadLayer> {
           .then((Directory directory) async {
 
         for (var i = 0; i < queue.length; i++) {
-          String url = _createTileImage(queue[i]);
+
+          TileQueueItem next = queue[i];
+
+          String url = _createTileImage(next.coords);
           await new Directory(
-                  '$_dir/offline_map/${queue[i].z.round().toString()}')
+                  '$_dir/offline_map/${next.coords.z.round().toString()}')
               .create()
 
               .then((Directory directory) async {
             await new Directory(
-                    '$_dir/offline_map/${queue[i].z.round().toString()}/${queue[i].x.round().toString()}')
+                    '$_dir/offline_map/${next.coords.z.round().toString()}/${next.coords.x.round().toString()}')
                 .create()
 
                 .then((Directory directory) async {
                   streamController.add("Downloading file $i of ${queue.length}");
-
+                  addBoundingBox(next.latLng, next.coords.z.round().toString());
                   await downloadFile(
                     url,
-                    '${queue[i].y.round().toString()}.png',
-                    '$_dir/offline_map/${queue[i].z.round().toString()}/${queue[i].x.round().toString()}');
+                    '${next.coords.y.round().toString()}.png',
+                    '$_dir/offline_map/${next.coords.z.round().toString()}/${next.coords.x.round().toString()}');
             });
           });
         }
@@ -231,7 +145,48 @@ class _TileDownloadLayerState extends State<TileDownloadLayer> {
     }
   }
 
+  Bounds pxBoundsToTileRange(Bounds bounds) {
+    var tileSize = CustomPoint(256.0, 256.0);
+    return Bounds(
+      bounds.min.unscaleBy(tileSize).floor(),
+      bounds.max.unscaleBy(tileSize).ceil() - CustomPoint(1, 1),
+    );
+  }
 
+  void setView(double zoom) {
+    var tileZoom = zoom.round().toDouble();
+    if (_tileZoom != tileZoom) {
+      _tileZoom = tileZoom;
+    }
+
+    var bounds = widget.map.getPixelWorldBounds(_tileZoom);
+    if (bounds != null) {
+      _globalTileRange = pxBoundsToTileRange(bounds);
+    }
+  }
+
+  bool isValidTile(Coords coords) {
+    var crs = widget.map.options.crs;
+    if (!crs.infinite) {
+      var bounds = _globalTileRange;
+      if ((crs.wrapLng == null &&
+              (coords.x < bounds.min.x || coords.x > bounds.max.x)) ||
+          (crs.wrapLat == null &&
+              (coords.y < bounds.min.y || coords.y > bounds.max.y))) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /// TILE DOWNLOADING /////////////////////////////////////////////////////////
+  /// //////////////////////////////////////////////////////////////////////////
+
+  Future<File> downloadFile(String url, String filename, String dir) async {
+    var req = await http.Client().get(Uri.parse(url));
+    var file = File('$dir/$filename');
+    return file.writeAsBytes(req.bodyBytes);
+  }
 
   String getSubdomain(Coords coords, List<String> subdomains) {
     var index = (coords.x + coords.y).round() % subdomains.length;
@@ -262,25 +217,18 @@ class _TileDownloadLayerState extends State<TileDownloadLayer> {
     bool permissionStorage = await Permission.storage.isGranted;
 
     if(permissionStorage) {
-
-      setState(() {
-        boundingBoxes.clear();
-      });
-
       queue.clear();
-
       for (LatLng point in widget.options.points){
-
         for( var i = minZoom ; i <= maxZoom; i++ ) {
           queue.addAll(generateQueueForZoom(point, i));
         }
       }
-
       await processQueue();
       streamController.add("Complete.");
       widget.options.onComplete();
-    }
 
+      setState(() { boundingBox = Container(); });
+    }
   }
 
   deleteTiles() async {
@@ -298,9 +246,72 @@ class _TileDownloadLayerState extends State<TileDownloadLayer> {
       print("Already cleared");
     }
     setState((){
-      boundingBoxes.clear();
+      boundingBoxMap.clear();
       points.clear();
     });
+  }
+
+  var _templateRe = RegExp(r'\{ *([\w_-]+) *\}');
+
+  String template(String str, Map<String, String> data) {
+    return str.replaceAllMapped(_templateRe, (Match match) {
+      var value = data[match.group(1)];
+      if (value == null) {
+        throw Exception('No value provided for variable ${match.group(1)}');
+      } else {
+        return value;
+      }
+    });
+  }
+
+  double wrapNum(double x, Tuple2<double, double> range, [bool includeMax]) {
+    var max = range.item2;
+    var min = range.item1;
+    var d = max - min;
+    return x == max && includeMax != null ? x : ((x - min) % d + d) % d + min;
+  }
+
+  /// GEO Maths ////////////////////////////////////////////////////////////////
+  /// //////////////////////////////////////////////////////////////////////////
+
+  double getZoomScale(double toZoom, double fromZoom) {
+    var crs = const Epsg3857();
+    return crs.scale(toZoom) / crs.scale(fromZoom);
+  }
+
+
+  Bounds getBounds(LatLng latLng, double zoom) {
+    var scale = getZoomScale(zoom, widget.map.zoom);
+    double w = screenAreaToDownloadPx / scale;
+    double h = screenAreaToDownloadPx / scale;
+    Point center = getViewportPointFromLatLng(latLng);
+
+    CustomPoint topLeft     = CustomPoint(center.x - (w * 0.5), center.y - (h * 0.5));
+    CustomPoint bottomRight = CustomPoint(center.x + (w * 0.5), center.y + (h * 0.5));
+
+    // add to debug map
+    boundingBoxMap["${latLng.toString()}_${zoom.round().toString()}"] = Rect.fromLTRB(topLeft.x, topLeft.y, bottomRight.x, bottomRight.y);
+
+    var globalTopLeft = pointToGlobal(topLeft, latLng, zoom);
+    var globalBottomRight = pointToGlobal(bottomRight, latLng, zoom);
+
+    return Bounds(globalTopLeft * scale, globalBottomRight * scale);
+  }
+
+  Point pointToGlobal(Point point, LatLng center, double zoom){
+    var renderObject = context.findRenderObject() as RenderBox;
+    var width = renderObject.size.width;
+    var height = renderObject.size.height;
+    var localPointCenterDistance =
+        CustomPoint((width / 2) - point.x, (height / 2) - point.y);
+    var mapCenter = widget.map.project(widget.map.center);
+
+    return mapCenter - localPointCenterDistance;
+  }
+
+  Point globalToPoint(Point point){
+    LatLng latLng = widget.map.unproject(point);
+    return getViewportPointFromLatLng(latLng);
   }
 
   Point getViewportPointFromLatLng(LatLng latLng) {
@@ -315,30 +326,42 @@ class _TileDownloadLayerState extends State<TileDownloadLayer> {
     return Epsg3857().pointToLatLng(point, widget.map.zoom);
   }
 
+  /// Markers + Debug stuff ////////////////////////////////////////////////////
+  /// //////////////////////////////////////////////////////////////////////////
+
   List<Widget> getMarkers(){
     List<Widget> widgets = [];
+    markers.clear();
     for (LatLng point in widget.options.points){
       Point p = getViewportPointFromLatLng(point);
       widgets.add(Positioned(
         top: p.y, left: p.x,
-        child: Container(width: 10, height: 10, color: Colors.blue,)
+        child: Container(width: 15, height: 15,
+            decoration: BoxDecoration(
+              color: Colors.grey,
+              borderRadius: BorderRadius.all(Radius.circular(10),),
+              border: Border.all(color: Colors.white, width: 2),
+              boxShadow: [BoxShadow(color: Colors.black38, offset: Offset(0.0, 1.0), blurRadius: 2.0)],
+            ),
+          )
       ));
     }
     return widgets;
   }
 
-  void addBoundingBox(CustomPoint topLeft, CustomPoint bottomRight, double zoom, { color: Colors.blue }){
-    boundingBoxes.add(Positioned(
-      top: topLeft.y, left: topLeft.x,
-      child: IgnorePointer(child: Container(width: bottomRight.x - topLeft.x, height: bottomRight.y - topLeft.y,
+  void addBoundingBox(LatLng latLng, String zoom){
+    Rect boxRect = boundingBoxMap["${latLng.toString()}_$zoom"];
+
+    setState(() {
+      boundingBox = (boxRect == null) ? Container() : Positioned(
+      top: boxRect.top, left: boxRect.left,
+      child: IgnorePointer(child: Container(width: boxRect.right - boxRect.left, height: boxRect.bottom - boxRect.top,
         decoration: BoxDecoration(border: Border.all(
           width: 1.0,
-          color: color,
-        )),
-        child: Text("$zoom")
-      )
-    )));
-    setState(() { });
+          color: Colors.white,
+        ), color: Colors.white.withOpacity(0.2)),
+      )));
+    });
   }
 
   void updateMarkers(){
@@ -373,40 +396,53 @@ class _TileDownloadLayerState extends State<TileDownloadLayer> {
     if (widget.options.debug != true) return;
 
     debugTools.addAll([
-      Positioned(top: 20, left: 20,
-        child: PillTag(widget.map.zoom.toString(), color: Colors.red)
-      ),
-      Positioned(top: 10, right: 10,
-        child: RaisedButton(child: Text("Download"), onPressed: () => downloadTiles())
-      ),
       Positioned(top: 50, right: 10,
         child: RaisedButton(child: Text("Reset"), onPressed: () => deleteTiles())
       ),
       Positioned(top: 90, right: 10,
         child: RaisedButton(child: Text("Stahp"), onPressed: () => queue.clear())
       ),
-      Positioned(top: 50, left: 20,
-        child: SizedBox(width: 250, child: Text(streamValue, style: TextStyle(fontSize: 10))),
-      ),
-      Positioned(top: 80, left: 20,
-        child: RaisedButton(child: Text("Set Zoom"), onPressed: () => widget.map.move(widget.map.center, 12))
-      ),
+
     ]);
   }
+
+  /// Yay Build! ///////////////////////////////////////////////////////////////
+  /// //////////////////////////////////////////////////////////////////////////
 
   @override
   Widget build(BuildContext context) {
 
     updateMarkers();
-    generateDebugTools();
 
     return Stack(children: [
+
+      boundingBox,
+
+      Positioned(top: 20, left: 20,
+        child: streamValue == "" ? Container() : PillTag(streamValue, color: Colors.black54)
+      ),
+
+      Positioned(top: 10, right: 10,
+        child: RaisedButton(child: Text("Download"), onPressed: () => downloadTiles())
+      ),
+
       ...debugTools,
+      ...points,
       ...markers,
-      ...boundingBoxes,
-      ...points
     ]);
   }
 
 
+}
+
+
+class TileQueueItem {
+
+  final LatLng latLng;
+  final Coords coords;
+
+  TileQueueItem({
+    this.coords,
+    this.latLng,
+  });
 }
